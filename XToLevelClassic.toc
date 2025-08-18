@@ -1,0 +1,15 @@
+## Interface: 11200
+
+## Title: XToLevel (Classic 1.12 Minimal)
+
+## Notes: Kills/Quests to level, XP/hour, ETA. Minimal port for 1.12.1 (no external libraries)
+
+## Author: You + ChatGPT
+
+## Version: 1.0.3
+
+## SavedVariablesPerCharacter: XToLevelClassicDB
+
+
+
+XToLevelClassic.lua
