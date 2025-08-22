@@ -5,12 +5,14 @@ Commands
 
 /xtl — help
 
-/xtl unlock — drag the frame; /xtl lock
+/xtl mode avg - Calculate based on rolling average
+/xtl mode last - Calculate based on last sample (default)
 
-/xtl len k 100 — set kill window
+/xtl len k <n> - Set kill windows (for avg mode)
+/xtl len q <n> - Set quest window (for avg mode)
 
-/xtl len q 75 — set quest window
+/xtl lock|unlock — Make the frame movable / lock the frame
+/xtl show|hide - Show or hide the frame
 
 /xtl reset — clear data
-
-/xtl show / /xtl hide
+/xtl debug - Toggle debug prints
