@@ -1,15 +1,13 @@
 ## Interface: 11200
 
-## Title: XToLevel (Classic 1.12 Minimal)
+## Title: XToLevel (Classic 1.12.1 Minimal for TurtleWoW)
 
 ## Notes: Kills/Quests to level, XP/hour, ETA. Minimal port for 1.12.1 (no external libraries)
 
-## Author: You + ChatGPT
+## Author: Hildabrandt (Ambershire) Originally by R4d104ct1v3
 
-## Version: 1.0.3
+## Version: 0.0.7
 
 ## SavedVariablesPerCharacter: XToLevelClassicDB
-
-
 
 XToLevelClassic.lua
