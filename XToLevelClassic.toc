@@ -6,7 +6,7 @@
 
 ## Author: Hildabrandt (Ambershire) Originally by R4d104ct1v3
 
-## Version: 0.0.7
+## Version: 1.0.11
 
 ## SavedVariablesPerCharacter: XToLevelClassicDB
 
