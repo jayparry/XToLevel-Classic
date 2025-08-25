@@ -1,3 +1,6 @@
+** I've fixed most of the ways this was getting confused but please raise an issue if you find it registering incorrect values **
+** I think I still need to gert it to handle exploration XP too. **
+
 # XToLevel-Classic
 Kills/Quests to level, XP/hour, ETA. Minimal port for 1.12.1 (no external libraries)
 
