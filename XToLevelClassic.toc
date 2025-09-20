@@ -2,7 +2,7 @@
 ## Title: XToLevel (Classic 1.12 Minimal)
 ## Notes: Kills/Quests to level, XP/hour, ETA. Minimal port for 1.12.1
 ## Author: Thundastruck (Based on XToLevel by R4d104ct1v3)
-## Version: 1.2.0
+## Version: 1.2.1
 ## SavedVariablesPerCharacter: XToLevelClassicDB
 
 XToLevelClassic.lua
