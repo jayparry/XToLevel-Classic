@@ -1,6 +1,6 @@
--- XToLevel (Classic) — v1.1.2
--- Minimal, 1.12.1-compatible leveling panel: kills/quests to level, XP/h, ETA.
--- Exploration XP contributes to session totals only (not kills/quests).
+-- XToLevel (Classic) — v1.2.0
+-- Kills/Quests to level, XP/h (rolling window by default), ETA.
+-- Exploration XP contributes to XP/h and ETA only (not kills/quests).
 
 local ADDON_NAME = "XToLevelClassic"
 local f = CreateFrame("Frame", "XTLClassic_Frame", UIParent)
@@ -10,29 +10,41 @@ XToLevelClassicDB = XToLevelClassicDB or nil
 local MAX_LEVEL = 60 -- Classic cap
 
 local defaults = {
-  version = "1.1.2",
+  version = "1.2.0",
   frame = { point = "CENTER", x = 0, y = 0, locked = false, shown = true },
   lengths = { kills = 50, quests = 50 },
   debug = false,
-  mode = "last",         -- "last" (default) or "avg"
-  questDebounce = 5.0,   -- seconds to ignore duplicate echoes
-  pendingWindow = 2.0,   -- seconds to wait for SYSTEM after COMBAT w/o "dies"
+  mode = "last",            -- "last" or "avg" for per-line values
+  questDebounce = 5.0,      -- seconds to ignore duplicate echoes
+  pendingWindow = 2.0,      -- seconds to wait for SYSTEM after COMBAT w/o "dies"
+
+  -- XP/h configuration
+  xphMode = "window",       -- "window" (default) or "session"
+  xphWindowMin = 15,        -- minutes for rolling window
+
   data = {
     kills = {},
     quests = {},
     xpSession = 0,
     sessionStart = nil,
+
+    -- markers
     lastQuestXP = 0,
     lastQuestTime = 0,
     lastExploreXP = 0,
     lastExploreTime = 0,
-    pending = {},        -- queued COMBAT w/o "dies": {xp=, t=}
+
+    -- pending non-dies COMBAT to classify later
+    pending = {},           -- { {xp=, t=} ... }
+
+    -- rolling XP events (all kinds): used for XP/h when xphMode="window"
+    xpEvents = {},          -- { {xp=, t=} ... }
   },
 }
 
 local disabled = false
 
--- ========== Utilities ==========
+-- ===== Utilities =====
 local function ensureDefaults(dst, src)
   if dst == nil then
     local t = {}
@@ -95,7 +107,7 @@ local function formatNumber(n)
   return sign .. out
 end
 
--- quest / exploration markers
+-- markers
 local function markQuestXP(xp)
   XToLevelClassicDB.data.lastQuestXP = xp
   XToLevelClassicDB.data.lastQuestTime = GetTime()
@@ -105,7 +117,35 @@ local function markExploreXP(xp)
   XToLevelClassicDB.data.lastExploreTime = GetTime()
 end
 
--- pending COMBAT (no "dies") helpers
+-- XP events (for rolling window)
+local function recordXPEvent(xp)
+  local ev = XToLevelClassicDB.data.xpEvents
+  table.insert(ev, { xp = xp, t = GetTime() })
+  -- Trim immediately to avoid growth
+  local now = GetTime()
+  local window = (XToLevelClassicDB.xphWindowMin or defaults.xphWindowMin) * 60
+  while table.getn(ev) > 0 and (now - (ev[1].t or 0)) > window do
+    table.remove(ev, 1)
+  end
+end
+
+-- Compute XP/h in window mode
+local function computeXPH_Window()
+  local ev = XToLevelClassicDB.data.xpEvents
+  local n = table.getn(ev)
+  if n == 0 then return 0 end
+  local now = GetTime()
+  local windowSec = (XToLevelClassicDB.xphWindowMin or defaults.xphWindowMin) * 60
+  local oldestT = ev[1].t or now
+  local elapsed = now - oldestT
+  if elapsed < 1 then elapsed = 1 end
+  if elapsed > windowSec then elapsed = windowSec end
+  local sum = 0
+  for i = 1, n do sum = sum + (ev[i].xp or 0) end
+  return (sum * 3600) / elapsed
+end
+
+-- pending non-dies COMBAT helpers
 local function addPending(xp)
   table.insert(XToLevelClassicDB.data.pending, { xp = xp, t = GetTime() })
   dprint("Pending COMBAT (no 'dies') +"..xp)
@@ -129,6 +169,7 @@ local function promoteExpiredPending()
       -- promote to Quest fallback
       pushSample(XToLevelClassicDB.data.quests, xp, XToLevelClassicDB.lengths.quests)
       XToLevelClassicDB.data.xpSession = (XToLevelClassicDB.data.xpSession or 0) + xp
+      recordXPEvent(xp)
       markQuestXP(xp)
       dprint("Quest XP (promoted COMBAT pending) +"..xp)
       -- do not increment i (removed current)
@@ -138,25 +179,7 @@ local function promoteExpiredPending()
   end
 end
 
--- ========== Session sanity ==========
-local function resetSession()
-  XToLevelClassicDB.data.xpSession = 0
-  XToLevelClassicDB.data.sessionStart = GetTime()
-  -- also clear any dangling pending items
-  XToLevelClassicDB.data.pending = {}
-  dprint("Session reset")
-end
-
-local function sanitizeSessionOnLoad()
-  local tnow = GetTime()
-  local ts = XToLevelClassicDB.data.sessionStart
-  if type(ts) ~= "number" or tnow < ts then
-    -- GetTime wrapped (new login/reload) or invalid; start a fresh session
-    resetSession()
-  end
-end
-
--- ========== UI ==========
+-- ===== UI =====
 local titleText, line1, line2, line3
 local built = false
 
@@ -188,6 +211,23 @@ local function BuildFrame()
   if XToLevelClassicDB.frame.shown then f:Show() else f:Hide() end
 end
 
+-- session init/sanity
+local function resetSession()
+  XToLevelClassicDB.data.xpSession = 0
+  XToLevelClassicDB.data.sessionStart = GetTime()
+  XToLevelClassicDB.data.pending = {}
+  XToLevelClassicDB.data.xpEvents = {}
+  dprint("Session reset")
+end
+
+local function sanitizeSessionOnLoad()
+  local tnow = GetTime()
+  local ts = XToLevelClassicDB.data.sessionStart
+  if type(ts) ~= "number" or tnow < ts then
+    resetSession()
+  end
+end
+
 local function ensureInit()
   if disabled then return end
   if not XToLevelClassicDB then
@@ -202,7 +242,7 @@ local function ensureInit()
   sanitizeSessionOnLoad()
 end
 
--- ========== Computation & Text ==========
+-- ===== Compute & Text =====
 local function compute()
   ensureInit()
   if disabled then return { vKill=nil, vQuest=nil, killsTo=nil, questsTo=nil, xph=0, etaTxt="" } end
@@ -220,17 +260,22 @@ local function compute()
     vQuest = average(XToLevelClassicDB.data.quests)
   end
 
-  -- robust elapsed (avoid negatives/zeros)
-  local elapsed = GetTime() - (XToLevelClassicDB.data.sessionStart or GetTime())
-  if (not elapsed) or (elapsed < 1) then elapsed = 1 end
-
-  local xph = (XToLevelClassicDB.data.xpSession or 0) * 3600 / elapsed
+  local xph
+  if XToLevelClassicDB.xphMode == "session" then
+    -- classic session-based (can be skewed by idle time)
+    local elapsed = GetTime() - (XToLevelClassicDB.data.sessionStart or GetTime())
+    if (not elapsed) or (elapsed < 1) then elapsed = 1 end
+    xph = (XToLevelClassicDB.data.xpSession or 0) * 3600 / elapsed
+  else
+    -- rolling window (default)
+    xph = computeXPH_Window()
+  end
 
   local killsTo  = (vKill  and vKill  > 0) and math.ceil(remain / vKill)  or nil
   local questsTo = (vQuest and vQuest > 0) and math.ceil(remain / vQuest) or nil
 
   local etaTxt = ""
-  if xph > 0 then
+  if xph and xph > 0 then
     local sec = math.floor(remain / (xph / 3600))
     if sec < 1 then sec = 1 end
     local h = math.floor(sec / 3600)
@@ -251,12 +296,12 @@ local function updateText()
   local label = (XToLevelClassicDB.mode == "last") and "last" or "avg"
   line1:SetText(string.format("Kills: %s %s  |  to level: %s", label, s.vKill and string.format("%.0f", s.vKill) or "-", s.killsTo and formatNumber(s.killsTo) or "-"))
   line2:SetText(string.format("Quests: %s %s  |  to level: %s", label, s.vQuest and string.format("%.0f", s.vQuest) or "-", s.questsTo and formatNumber(s.questsTo) or "-"))
-  local t = "XP/h: " .. formatNumber(math.floor((s.xph or 0) + 0.5))
+  local t = "XP/h: " .. formatNumber(math.floor(((s.xph or 0) + 0.5)))
   if s.etaTxt ~= "" then t = t .. "  |  " .. s.etaTxt end
   line3:SetText(t)
 end
 
--- ========== Disable at 60 ==========
+-- ===== Disable at 60 =====
 local function DisableAddon(msg)
   disabled = true
   if f then
@@ -271,7 +316,7 @@ local function DisableAddon(msg)
   if msg then DEFAULT_CHAT_FRAME:AddMessage(msg) end
 end
 
--- ========== Ticker ==========
+-- ===== Ticker =====
 local acc = 0
 local function OnUpd(self, elapsed)
   if disabled then return end
@@ -279,18 +324,23 @@ local function OnUpd(self, elapsed)
   if acc >= 1.0 then
     acc = 0
     promoteExpiredPending()
+    -- also trim xpEvents against window (in case no new XP arrives)
+    local ev = XToLevelClassicDB.data.xpEvents
+    local now = GetTime()
+    local window = (XToLevelClassicDB.xphWindowMin or defaults.xphWindowMin) * 60
+    while table.getn(ev) > 0 and (now - (ev[1].t or 0)) > window do
+      table.remove(ev, 1)
+    end
     if XToLevelClassicDB and XToLevelClassicDB.frame and XToLevelClassicDB.frame.shown then updateText() end
   end
 end
 
--- ========== Events ==========
+-- ===== Events =====
 f:SetScript("OnEvent", function(self, ev, a1)
   ev = ev or event; a1 = a1 or arg1; if not ev then return end
 
   if ev == "PLAYER_LOGIN" then
     ensureInit()
-    -- Fresh session each login/reload if clock wrapped
-    sanitizeSessionOnLoad()
     DEFAULT_CHAT_FRAME:AddMessage("XToLevelClassic loaded. Use /xtl")
 
   elseif ev == "PLAYER_ENTERING_WORLD" then
@@ -309,7 +359,6 @@ f:SetScript("OnEvent", function(self, ev, a1)
     ensureInit()
     XToLevelClassicDB.data.kills = {}
     XToLevelClassicDB.data.quests = {}
-    -- keep session timer running across dings; users prefer continuous XP/h
     updateText()
 
   elseif ev == "PLAYER_XP_UPDATE" then
@@ -327,6 +376,7 @@ f:SetScript("OnEvent", function(self, ev, a1)
       local xp = parseFirstNumber(raw)
       if xp then
         XToLevelClassicDB.data.xpSession = (XToLevelClassicDB.data.xpSession or 0) + xp
+        recordXPEvent(xp)
         markExploreXP(xp)
         if consumePending(xp) then dprint("Consumed pending due to exploration +"..xp) end
         updateText()
@@ -344,6 +394,7 @@ f:SetScript("OnEvent", function(self, ev, a1)
         consumePending(xp) -- consume any pending non-dies COMBAT for this XP
         pushSample(XToLevelClassicDB.data.quests, xp, XToLevelClassicDB.lengths.quests)
         XToLevelClassicDB.data.xpSession = (XToLevelClassicDB.data.xpSession or 0) + xp
+        recordXPEvent(xp)
         markQuestXP(xp)
         updateText()
         dprint("Quest XP +"..xp.."  | "..tostring(raw))
@@ -376,6 +427,7 @@ f:SetScript("OnEvent", function(self, ev, a1)
       -- Kill
       pushSample(XToLevelClassicDB.data.kills, xp, XToLevelClassicDB.lengths.kills)
       XToLevelClassicDB.data.xpSession = (XToLevelClassicDB.data.xpSession or 0) + xp
+      recordXPEvent(xp)
       updateText()
       dprint("Kill XP +"..xp.."  | "..tostring(raw))
     else
@@ -395,7 +447,7 @@ f:RegisterEvent("CHAT_MSG_COMBAT_XP_GAIN")
 
 f:SetScript("OnUpdate", OnUpd)
 
--- ========== Slash Commands ==========
+-- ===== Slash Commands =====
 SLASH_XTOLEVEL1 = "/xtl"
 SlashCmdList["XTOLEVEL"] = function(msg)
   if disabled then
@@ -407,17 +459,19 @@ SlashCmdList["XTOLEVEL"] = function(msg)
 
   if msg == "" or msg == "help" then
     DEFAULT_CHAT_FRAME:AddMessage("|cffffd100XToLevel Classic commands:|r")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl mode avg           - use rolling average")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl mode last          - use last sample (default)")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl len k <n>          - set kill window (avg mode)")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl len q <n>          - set quest window (avg mode)")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl clear              - clear kill/quest samples")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl reset              - reset kills, quests, session XP, timer")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl qdebounce <sec>    - set quest/explore echo window (default 5.0)")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl pending <sec>      - set pending COMBAT wait window (default 2.0)")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl lock|unlock        - lock/unlock frame")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl show|hide          - show/hide panel")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl debug              - toggle debug prints")
+    DEFAULT_CHAT_FRAME:AddMessage("  /xtl mode avg                 - use rolling average")
+    DEFAULT_CHAT_FRAME:AddMessage("  /xtl mode last                - use last sample (default)")
+    DEFAULT_CHAT_FRAME:AddMessage("  /xtl len k <n>                - set kill window (avg mode)")
+    DEFAULT_CHAT_FRAME:AddMessage("  /xtl len q <n>                - set quest window (avg mode)")
+    DEFAULT_CHAT_FRAME:AddMessage("  /xtl xph mode window|session  - XP/h based on recent window (default) or whole session")
+    DEFAULT_CHAT_FRAME:AddMessage("  /xtl xph window <minutes>     - set window length (default 15)")
+    DEFAULT_CHAT_FRAME:AddMessage("  /xtl clear                    - clear kill/quest samples")
+    DEFAULT_CHAT_FRAME:AddMessage("  /xtl reset                    - reset kills, quests, session XP/timer")
+    DEFAULT_CHAT_FRAME:AddMessage("  /xtl qdebounce <sec>          - set quest/explore echo window (default 5.0)")
+    DEFAULT_CHAT_FRAME:AddMessage("  /xtl pending <sec>            - set pending COMBAT wait (default 2.0)")
+    DEFAULT_CHAT_FRAME:AddMessage("  /xtl lock|unlock              - lock/unlock frame")
+    DEFAULT_CHAT_FRAME:AddMessage("  /xtl show|hide                - show/hide panel")
+    DEFAULT_CHAT_FRAME:AddMessage("  /xtl debug                    - toggle debug prints")
     return
   end
 
@@ -443,6 +497,27 @@ SlashCmdList["XTOLEVEL"] = function(msg)
     if m == "avg" or m == "last" then
       XToLevelClassicDB.mode = m; DEFAULT_CHAT_FRAME:AddMessage("XToLevel: mode set to "..m); updateText(); return
     end
+
+    -- xph controls
+    local _, _, xm = string.find(msg, "^xph%s+mode%s+(%a+)")
+    if xm == "window" or xm == "session" then
+      XToLevelClassicDB.xphMode = xm
+      DEFAULT_CHAT_FRAME:AddMessage("XToLevel: XP/h mode set to "..xm); updateText(); return
+    end
+    local _, _, mins = string.find(msg, "^xph%s+window%s+(%d+)")
+    if mins then
+      local mnum = tonumber(mins)
+      if mnum and mnum >= 1 and mnum <= 180 then
+        XToLevelClassicDB.xphWindowMin = mnum
+        DEFAULT_CHAT_FRAME:AddMessage("XToLevel: XP/h window set to "..mnum.." min")
+        updateText(); return
+      else
+        DEFAULT_CHAT_FRAME:AddMessage("XToLevel: window must be 1..180 minutes")
+        return
+      end
+    end
+
+    -- legacy knobs
     local _, _, nK = string.find(msg, "len%s+k%s+(%d+)")
     if nK then
       XToLevelClassicDB.lengths.kills = tonumber(nK) or XToLevelClassicDB.lengths.kills
