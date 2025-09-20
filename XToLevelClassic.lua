@@ -449,102 +449,162 @@ f:SetScript("OnUpdate", OnUpd)
 
 -- ===== Slash Commands =====
 SLASH_XTOLEVEL1 = "/xtl"
+
+local function boolstr(b) return b and "ON" or "OFF" end
+
+local function printBasicHelp()
+  DEFAULT_CHAT_FRAME:AddMessage("|cffffd100XToLevel Classic (basic):|r")
+  DEFAULT_CHAT_FRAME:AddMessage("  /xtl mode last|avg         - Kills/Quests use last sample or rolling average")
+  DEFAULT_CHAT_FRAME:AddMessage("  /xtl len k <n>             - Set kill average window")
+  DEFAULT_CHAT_FRAME:AddMessage("  /xtl len q <n>             - Set quest average window")
+  DEFAULT_CHAT_FRAME:AddMessage("  /xtl show | /xtl hide      - Show/hide the panel")
+  DEFAULT_CHAT_FRAME:AddMessage("  /xtl lock | /xtl unlock    - Lock/unlock panel position")
+  DEFAULT_CHAT_FRAME:AddMessage("  /xtl clear                 - Clear kill/quest samples")
+  DEFAULT_CHAT_FRAME:AddMessage("  /xtl reset                 - Reset samples & session timer")
+  DEFAULT_CHAT_FRAME:AddMessage("  /xtl help adv              - Show advanced options")
+end
+
+local function printAdvancedHelp()
+  DEFAULT_CHAT_FRAME:AddMessage("|cffffd100XToLevel Classic (advanced):|r")
+  DEFAULT_CHAT_FRAME:AddMessage("  /xtl xph mode window|session  - XP/h from recent window (default) or whole session")
+  DEFAULT_CHAT_FRAME:AddMessage("  /xtl xph window <minutes>     - Set XP/h window length (default 15)")
+  DEFAULT_CHAT_FRAME:AddMessage("  /xtl qdebounce <sec>          - Quest/explore echo window (default 5.0)")
+  DEFAULT_CHAT_FRAME:AddMessage("  /xtl pending <sec>            - Pending COMBAT wait (default 2.0)")
+  DEFAULT_CHAT_FRAME:AddMessage("  /xtl debug                    - Toggle debug prints")
+  DEFAULT_CHAT_FRAME:AddMessage("  /xtl config                   - Print current configuration")
+end
+
+local function printConfig()
+  local db = XToLevelClassicDB or {}
+  local d  = db.data or {}
+  local f  = db.frame or {}
+  DEFAULT_CHAT_FRAME:AddMessage("|cff6aa84f[XTL]|r Configuration:")
+  DEFAULT_CHAT_FRAME:AddMessage(string.format("  Version: %s", tostring(db.version or "unknown")))
+  DEFAULT_CHAT_FRAME:AddMessage(string.format("  Mode: %s", tostring(db.mode or "last")))
+  DEFAULT_CHAT_FRAME:AddMessage(string.format("  Lengths: kills=%s quests=%s",
+    tostring(db.lengths and db.lengths.kills or "-"),
+    tostring(db.lengths and db.lengths.quests or "-")))
+  DEFAULT_CHAT_FRAME:AddMessage(string.format("  XP/h: mode=%s window=%s min",
+    tostring(db.xphMode or "window"),
+    tostring(db.xphWindowMin or 15)))
+  DEFAULT_CHAT_FRAME:AddMessage(string.format("  Debounce: quest=%.1fs  pending=%.1fs",
+    tonumber(db.questDebounce or 5.0) or 5.0,
+    tonumber(db.pendingWindow or 2.0) or 2.0))
+  DEFAULT_CHAT_FRAME:AddMessage(string.format("  Frame: shown=%s locked=%s point=%s x=%s y=%s",
+    boolstr(f.shown), boolstr(f.locked), tostring(f.point or "?"), tostring(f.x or 0), tostring(f.y or 0)))
+  DEFAULT_CHAT_FRAME:AddMessage(string.format("  Debug: %s", boolstr(db.debug)))
+  DEFAULT_CHAT_FRAME:AddMessage(string.format("  Session: xp=%s  events=%s",
+    tostring(d.xpSession or 0),
+    tostring((d.xpEvents and table.getn(d.xpEvents)) or 0)))
+  DEFAULT_CHAT_FRAME:AddMessage(string.format("  Samples: kills=%s quests=%s",
+    tostring((d.kills and table.getn(d.kills)) or 0),
+    tostring((d.quests and table.getn(d.quests)) or 0)))
+end
+
 SlashCmdList["XTOLEVEL"] = function(msg)
   if disabled then
-    DEFAULT_CHAT_FRAME:AddMessage("|cffff7e5eXToLevelClassic|r: disabled at level "..MAX_LEVEL..".")
+    DEFAULT_CHAT_FRAME:AddMessage("|cffff7e5eXToLevelClassic|r: disabled at level 60.")
     return
   end
   ensureInit()
   msg = string.lower(msg or "")
+  msg = string.gsub(msg, "^%s+", "")
+  msg = string.gsub(msg, "%s+$", "")
 
+  -- Help (basic vs advanced)
   if msg == "" or msg == "help" then
-    DEFAULT_CHAT_FRAME:AddMessage("|cffffd100XToLevel Classic commands:|r")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl mode avg                 - use rolling average")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl mode last                - use last sample (default)")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl len k <n>                - set kill window (avg mode)")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl len q <n>                - set quest window (avg mode)")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl xph mode window|session  - XP/h based on recent window (default) or whole session")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl xph window <minutes>     - set window length (default 15)")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl clear                    - clear kill/quest samples")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl reset                    - reset kills, quests, session XP/timer")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl qdebounce <sec>          - set quest/explore echo window (default 5.0)")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl pending <sec>            - set pending COMBAT wait (default 2.0)")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl lock|unlock              - lock/unlock frame")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl show|hide                - show/hide panel")
-    DEFAULT_CHAT_FRAME:AddMessage("  /xtl debug                    - toggle debug prints")
+    printBasicHelp()
+    return
+  elseif msg == "help adv" or msg == "help advanced" then
+    printAdvancedHelp()
     return
   end
 
+  -- Config dump
+  if msg == "config" or msg == "show config" or msg == "showconfig" then
+    printConfig(); return
+  end
+
+  -- Basic commands
   if msg == "lock" then
-    XToLevelClassicDB.frame.locked = true; DEFAULT_CHAT_FRAME:AddMessage("XToLevel: frame locked")
+    XToLevelClassicDB.frame.locked = true; DEFAULT_CHAT_FRAME:AddMessage("XToLevel: frame locked"); return
   elseif msg == "unlock" then
-    XToLevelClassicDB.frame.locked = false; DEFAULT_CHAT_FRAME:AddMessage("XToLevel: frame unlocked")
+    XToLevelClassicDB.frame.locked = false; DEFAULT_CHAT_FRAME:AddMessage("XToLevel: frame unlocked"); return
   elseif msg == "clear" then
     XToLevelClassicDB.data.kills = {}; XToLevelClassicDB.data.quests = {}
-    DEFAULT_CHAT_FRAME:AddMessage("XToLevel: kill/quest data cleared"); updateText()
+    DEFAULT_CHAT_FRAME:AddMessage("XToLevel: kill/quest data cleared"); updateText(); return
   elseif msg == "reset" then
-    XToLevelClassicDB.data.kills = {}; XToLevelClassicDB.data.quests = {}
-    resetSession()
-    DEFAULT_CHAT_FRAME:AddMessage("XToLevel: data reset"); updateText()
+    XToLevelClassicDB.data.kills = {}; XToLevelClassicDB.data.quests = {}; 
+    -- keep session reset behavior from v1.2.0:
+    XToLevelClassicDB.data.xpSession = 0
+    XToLevelClassicDB.data.sessionStart = GetTime()
+    XToLevelClassicDB.data.pending = {}
+    XToLevelClassicDB.data.xpEvents = {}
+    DEFAULT_CHAT_FRAME:AddMessage("XToLevel: data reset"); updateText(); return
   elseif msg == "show" then
-    XToLevelClassicDB.frame.shown = true; f:Show(); updateText()
+    XToLevelClassicDB.frame.shown = true; XTLClassic_Frame:Show(); updateText(); return
   elseif msg == "hide" then
-    XToLevelClassicDB.frame.shown = false; f:Hide()
+    XToLevelClassicDB.frame.shown = false; XTLClassic_Frame:Hide(); return
   elseif msg == "debug" then
-    XToLevelClassicDB.debug = not XToLevelClassicDB.debug; DEFAULT_CHAT_FRAME:AddMessage("XToLevel: debug "..(XToLevelClassicDB.debug and "ON" or "OFF"))
-  else
-    local _, _, m = string.find(msg, "^mode%s+(%a+)")
-    if m == "avg" or m == "last" then
-      XToLevelClassicDB.mode = m; DEFAULT_CHAT_FRAME:AddMessage("XToLevel: mode set to "..m); updateText(); return
-    end
-
-    -- xph controls
-    local _, _, xm = string.find(msg, "^xph%s+mode%s+(%a+)")
-    if xm == "window" or xm == "session" then
-      XToLevelClassicDB.xphMode = xm
-      DEFAULT_CHAT_FRAME:AddMessage("XToLevel: XP/h mode set to "..xm); updateText(); return
-    end
-    local _, _, mins = string.find(msg, "^xph%s+window%s+(%d+)")
-    if mins then
-      local mnum = tonumber(mins)
-      if mnum and mnum >= 1 and mnum <= 180 then
-        XToLevelClassicDB.xphWindowMin = mnum
-        DEFAULT_CHAT_FRAME:AddMessage("XToLevel: XP/h window set to "..mnum.." min")
-        updateText(); return
-      else
-        DEFAULT_CHAT_FRAME:AddMessage("XToLevel: window must be 1..180 minutes")
-        return
-      end
-    end
-
-    -- legacy knobs
-    local _, _, nK = string.find(msg, "len%s+k%s+(%d+)")
-    if nK then
-      XToLevelClassicDB.lengths.kills = tonumber(nK) or XToLevelClassicDB.lengths.kills
-      DEFAULT_CHAT_FRAME:AddMessage("XToLevel: kill window set to "..XToLevelClassicDB.lengths.kills)
-      while table.getn(XToLevelClassicDB.data.kills) > XToLevelClassicDB.lengths.kills do table.remove(XToLevelClassicDB.data.kills, 1) end
-      updateText(); return
-    end
-    local _, _, nQ = string.find(msg, "len%s+q%s+(%d+)")
-    if nQ then
-      XToLevelClassicDB.lengths.quests = tonumber(nQ) or XToLevelClassicDB.lengths.quests
-      DEFAULT_CHAT_FRAME:AddMessage("XToLevel: quest window set to "..XToLevelClassicDB.lengths.quests)
-      while table.getn(XToLevelClassicDB.data.quests) > XToLevelClassicDB.lengths.quests do table.remove(XToLevelClassicDB.data.quests, 1) end
-      updateText(); return
-    end
-    local _, _, sec = string.find(msg, "^qdebounce%s+(%d+%.?%d*)")
-    if sec then
-      XToLevelClassicDB.questDebounce = tonumber(sec) or defaults.questDebounce
-      DEFAULT_CHAT_FRAME:AddMessage(string.format("XToLevel: quest/explore echo window set to %.1fs", XToLevelClassicDB.questDebounce))
-      return
-    end
-    local _, _, pwin = string.find(msg, "^pending%s+(%d+%.?%d*)")
-    if pwin then
-      XToLevelClassicDB.pendingWindow = tonumber(pwin) or defaults.pendingWindow
-      DEFAULT_CHAT_FRAME:AddMessage(string.format("XToLevel: pending COMBAT wait set to %.1fs", XToLevelClassicDB.pendingWindow))
-      return
-    end
-
-    DEFAULT_CHAT_FRAME:AddMessage("XToLevel: unknown command. Use /xtl for help")
+    XToLevelClassicDB.debug = not XToLevelClassicDB.debug; DEFAULT_CHAT_FRAME:AddMessage("XToLevel: debug "..(XToLevelClassicDB.debug and "ON" or "OFF")); return
   end
+
+  -- Parameterized commands (basic + advanced)
+  local _, _, m = string.find(msg, "^mode%s+(%a+)")
+  if m == "avg" or m == "last" then
+    XToLevelClassicDB.mode = m; DEFAULT_CHAT_FRAME:AddMessage("XToLevel: mode set to "..m); updateText(); return
+  end
+
+  local _, _, nK = string.find(msg, "len%s+k%s+(%d+)")
+  if nK then
+    XToLevelClassicDB.lengths.kills = tonumber(nK) or XToLevelClassicDB.lengths.kills
+    DEFAULT_CHAT_FRAME:AddMessage("XToLevel: kill window set to "..XToLevelClassicDB.lengths.kills)
+    while table.getn(XToLevelClassicDB.data.kills) > XToLevelClassicDB.lengths.kills do table.remove(XToLevelClassicDB.data.kills, 1) end
+    updateText(); return
+  end
+
+  local _, _, nQ = string.find(msg, "len%s+q%s+(%d+)")
+  if nQ then
+    XToLevelClassicDB.lengths.quests = tonumber(nQ) or XToLevelClassicDB.lengths.quests
+    DEFAULT_CHAT_FRAME:AddMessage("XToLevel: quest window set to "..XToLevelClassicDB.lengths.quests)
+    while table.getn(XToLevelClassicDB.data.quests) > XToLevelClassicDB.lengths.quests do table.remove(XToLevelClassicDB.data.quests, 1) end
+    updateText(); return
+  end
+
+  -- Advanced: XP/h controls
+  local _, _, xm = string.find(msg, "^xph%s+mode%s+(%a+)")
+  if xm == "window" or xm == "session" then
+    XToLevelClassicDB.xphMode = xm
+    DEFAULT_CHAT_FRAME:AddMessage("XToLevel: XP/h mode set to "..xm); updateText(); return
+  end
+
+  local _, _, mins = string.find(msg, "^xph%s+window%s+(%d+)")
+  if mins then
+    local mnum = tonumber(mins)
+    if mnum and mnum >= 1 and mnum <= 180 then
+      XToLevelClassicDB.xphWindowMin = mnum
+      DEFAULT_CHAT_FRAME:AddMessage("XToLevel: XP/h window set to "..mnum.." min")
+      updateText(); return
+    else
+      DEFAULT_CHAT_FRAME:AddMessage("XToLevel: window must be 1..180 minutes")
+      return
+    end
+  end
+
+  local _, _, sec = string.find(msg, "^qdebounce%s+(%d+%.?%d*)")
+  if sec then
+    XToLevelClassicDB.questDebounce = tonumber(sec) or 5.0
+    DEFAULT_CHAT_FRAME:AddMessage(string.format("XToLevel: quest/explore echo window set to %.1fs", XToLevelClassicDB.questDebounce))
+    return
+  end
+
+  local _, _, pwin = string.find(msg, "^pending%s+(%d+%.?%d*)")
+  if pwin then
+    XToLevelClassicDB.pendingWindow = tonumber(pwin) or 2.0
+    DEFAULT_CHAT_FRAME:AddMessage(string.format("XToLevel: pending COMBAT wait set to %.1fs", XToLevelClassicDB.pendingWindow))
+    return
+  end
+
+  -- Fallback
+  DEFAULT_CHAT_FRAME:AddMessage("XToLevel: unknown command. Use /xtl help or /xtl help adv")
 end
